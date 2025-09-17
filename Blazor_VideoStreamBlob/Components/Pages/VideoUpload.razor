@@ -1,0 +1,291 @@
+@page "/videoupload"
+@using Blazor_VideoStreamBlob.Infrastructure
+@inject BLOBConnect BlobStorage
+@inject ILogger<VideoUpload> Logger
+@rendermode InteractiveServer
+
+<PageTitle>Upload Video</PageTitle>
+
+<div class="container mt-4">
+    <h1>Upload Video to Blob Storage</h1>
+    
+    <div class="row mt-4">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5>Select Video File</h5>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="videoFile" class="form-label">Choose MP4 file to upload:</label>
+                        <InputFile id="videoFile" 
+                                   OnChange="@OnFileSelected" 
+                                   accept=".mp4,video/mp4"
+                                   class="form-control" 
+                                   disabled="@isUploading" />
+                    </div>
+                    
+                    @if (selectedFile != null)
+                    {
+                        <div class="alert alert-info">
+                            <strong>Selected file:</strong> @selectedFile.Name<br />
+                            <strong>Size:</strong> @FormatFileSize(selectedFile.Size)<br />
+                            <strong>Type:</strong> @selectedFile.ContentType
+                        </div>
+                        
+                        @if (selectedFile.Size > maxFileSize)
+                        {
+                            <div class="alert alert-danger">
+                                File size exceeds maximum allowed size of @FormatFileSize(maxFileSize)
+                            </div>
+                        }
+                        else if (!selectedFile.ContentType.StartsWith("video/") && !selectedFile.Name.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase))
+                        {
+                            <div class="alert alert-warning">
+                                Please select a valid MP4 video file.
+                            </div>
+                        }
+                        else
+                        {
+                            <button class="btn btn-primary" 
+                                    @onclick="UploadVideo" 
+                                    disabled="@isUploading">
+                                @if (isUploading)
+                                {
+                                    <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                                    <span>Uploading...</span>
+                                }
+                                else
+                                {
+                                    <span>Upload Video</span>
+                                }
+                            </button>
+                        }
+                    }
+                    
+                    @if (isUploading)
+                    {
+                        <div class="mt-3">
+                            <label>Upload Progress:</label>
+                            <div class="progress">
+                                <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                     role="progressbar" 
+                                     style="width: @uploadProgress%"
+                                     aria-valuenow="@uploadProgress" 
+                                     aria-valuemin="0" 
+                                     aria-valuemax="100">
+                                    @uploadProgress%
+                                </div>
+                            </div>
+                        </div>
+                    }
+                    
+                    @if (!string.IsNullOrEmpty(errorMessage))
+                    {
+                        <div class="alert alert-danger mt-3">
+                            <strong>Error:</strong> @errorMessage
+                        </div>
+                    }
+                    
+                    @if (!string.IsNullOrEmpty(successMessage))
+                    {
+                        <div class="alert alert-success mt-3">
+                            <strong>Success!</strong> @successMessage
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5>Existing Videos</h5>
+                </div>
+                <div class="card-body">
+                    @if (existingVideos == null)
+                    {
+                        <div class="spinner-border" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    }
+                    else if (existingVideos.Count == 0)
+                    {
+                        <p>No videos found in storage.</p>
+                    }
+                    else
+                    {
+                        <div class="list-group">
+                            @foreach (var video in existingVideos)
+                            {
+                                <div class="list-group-item d-flex justify-content-between align-items-center">
+                                    <span>@video</span>
+                                    <button class="btn btn-sm btn-danger" 
+                                            @onclick="() => DeleteVideo(video)"
+                                            disabled="@isDeleting">
+                                        <i class="bi bi-trash"></i> Delete
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                        <div class="mt-3">
+                            <button class="btn btn-sm btn-secondary" @onclick="RefreshVideoList">
+                                <i class="bi bi-arrow-clockwise"></i> Refresh List
+                            </button>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private IBrowserFile? selectedFile;
+    private bool isUploading = false;
+    private bool isDeleting = false;
+    private int uploadProgress = 0;
+    private string errorMessage = string.Empty;
+    private string successMessage = string.Empty;
+    private List<string>? existingVideos;
+    private const long maxFileSize = 500 * 1024 * 1024; // 500 MB limit
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshVideoList();
+    }
+    
+    private void OnFileSelected(InputFileChangeEventArgs e)
+    {
+        selectedFile = e.File;
+        errorMessage = string.Empty;
+        successMessage = string.Empty;
+    }
+    
+    private async Task UploadVideo()
+    {
+        if (selectedFile == null)
+            return;
+            
+        try
+        {
+            isUploading = true;
+            uploadProgress = 0;
+            errorMessage = string.Empty;
+            successMessage = string.Empty;
+            
+            // Validate file
+            if (selectedFile.Size > maxFileSize)
+            {
+                errorMessage = $"File size exceeds maximum allowed size of {FormatFileSize(maxFileSize)}";
+                return;
+            }
+            
+            if (!selectedFile.ContentType.StartsWith("video/") && !selectedFile.Name.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase))
+            {
+                errorMessage = "Please select a valid MP4 video file.";
+                return;
+            }
+            
+            // Read file content with progress tracking
+            using var stream = selectedFile.OpenReadStream(maxFileSize);
+            using var memoryStream = new MemoryStream();
+            
+            var buffer = new byte[1024 * 1024]; // 1MB buffer
+            int bytesRead;
+            long totalBytesRead = 0;
+            
+            while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+            {
+                await memoryStream.WriteAsync(buffer, 0, bytesRead);
+                totalBytesRead += bytesRead;
+                uploadProgress = (int)((totalBytesRead * 100) / selectedFile.Size);
+                StateHasChanged();
+            }
+            
+            memoryStream.Position = 0;
+            
+            // Upload to blob storage
+            var result = await BlobStorage.UploadVideoAsync(selectedFile.Name, memoryStream, selectedFile.ContentType);
+            
+            if (result)
+            {
+                successMessage = $"Video '{selectedFile.Name}' uploaded successfully!";
+                selectedFile = null;
+                await RefreshVideoList();
+            }
+            else
+            {
+                errorMessage = "Failed to upload video to blob storage.";
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"An error occurred: {ex.Message}";
+            Logger.LogError(ex, "Error uploading video");
+        }
+        finally
+        {
+            isUploading = false;
+            uploadProgress = 0;
+        }
+    }
+    
+    private async Task DeleteVideo(string videoName)
+    {
+        try
+        {
+            isDeleting = true;
+            errorMessage = string.Empty;
+            
+            var result = await BlobStorage.DeleteVideoAsync(videoName);
+            
+            if (result)
+            {
+                successMessage = $"Video '{videoName}' deleted successfully!";
+                await RefreshVideoList();
+            }
+            else
+            {
+                errorMessage = $"Failed to delete video '{videoName}'.";
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"An error occurred while deleting: {ex.Message}";
+            Logger.LogError(ex, "Error deleting video {VideoName}", videoName);
+        }
+        finally
+        {
+            isDeleting = false;
+        }
+    }
+    
+    private async Task RefreshVideoList()
+    {
+        try
+        {
+            existingVideos = await Task.Run(() => BlobStorage.ListBlobs());
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error refreshing video list");
+            existingVideos = new List<string>();
+        }
+    }
+    
+    private string FormatFileSize(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB" };
+        double len = bytes;
+        int order = 0;
+        
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len = len / 1024;
+        }
+        
+        return $"{len:0.##} {sizes[order]}";
+    }
+}

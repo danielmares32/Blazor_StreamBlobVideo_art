@@ -48,5 +48,55 @@ namespace Blazor_VideoStreamBlob.Infrastructure
             var blobClient = containerClient.GetBlobClient(blobName);
             return await blobClient.OpenReadAsync();
         }
+
+        public async Task<bool> UploadVideoAsync(string fileName, Stream fileStream, string contentType)
+        {
+            try
+            {
+                var blobSvcClient = new BlobServiceClient(_connectionString);
+                var containerClient = blobSvcClient.GetBlobContainerClient(_containerName);
+                
+                // Ensure container exists
+                await containerClient.CreateIfNotExistsAsync();
+                
+                var blobClient = containerClient.GetBlobClient(fileName);
+                
+                // Upload the file with content type
+                var blobHttpHeaders = new BlobHttpHeaders
+                {
+                    ContentType = contentType
+                };
+                
+                await blobClient.UploadAsync(fileStream, new BlobUploadOptions
+                {
+                    HttpHeaders = blobHttpHeaders
+                });
+                
+                return true;
+            }
+            catch (Exception)
+            {
+                // Log exception here if logging is available
+                return false;
+            }
+        }
+
+        public async Task<bool> DeleteVideoAsync(string blobName)
+        {
+            try
+            {
+                var blobSvcClient = new BlobServiceClient(_connectionString);
+                var containerClient = blobSvcClient.GetBlobContainerClient(_containerName);
+                var blobClient = containerClient.GetBlobClient(blobName);
+                
+                var response = await blobClient.DeleteIfExistsAsync();
+                return response.Value;
+            }
+            catch (Exception)
+            {
+                // Log exception here if logging is available
+                return false;
+            }
+        }
     }
 }
